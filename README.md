@@ -13,6 +13,10 @@
 
 <h1 align="center">SoundCraft</h1>
 
+**This fork adds purpose-led sound design over MCP:** describe the sound's role and vibe,
+create or transform audio, refine editable effects, audition real WAV audio, measure and export.
+[Setup and examples →](docs/sound-design-mcp.md)
+
 <p align="center">
   <b>Recording, editing and mixing audio; an open-source, modern digital audio workstation (DAW), built in pure Rust.</b>
 </p>

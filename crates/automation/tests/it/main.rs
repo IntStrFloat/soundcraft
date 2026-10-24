@@ -3,3 +3,4 @@
 mod agent_tasks;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod automation_roots;
+mod sound_workflow;

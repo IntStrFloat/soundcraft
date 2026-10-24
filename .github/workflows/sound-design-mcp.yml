@@ -1,0 +1,31 @@
+name: Sound design MCP
+
+on:
+  push:
+    branches: [main, 'codex/sound-design-mcp']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audio-workflow:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux audio headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Static analysis
+        run: cargo clippy --locked -p soundcraft-engine -p soundcraft-automation -p soundcraft-cli -p soundcraft-ui-egui --all-targets -- -D warnings
+      - name: Engine and MCP lifecycle
+        run: cargo test --locked -p soundcraft-engine -p soundcraft-automation -p soundcraft-cli -p soundcraft-ui-egui
+      - name: Layer and asset boundaries
+        run: cargo xtask layers
+      - run: cargo xtask assets

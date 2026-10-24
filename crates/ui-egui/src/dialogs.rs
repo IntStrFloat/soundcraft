@@ -27,7 +27,71 @@ pub enum Dialog {
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Session { frame_rate: String, bit_depth: String },
     ScoreSetup { title: String, composer: String, bars_per_system: u32, show_track_names: bool },
+    SoundDesign(SoundDesignDialog),
     SaveChanges { then: (String, Value) },
+}
+
+/// Menu-style sound design captures its targets when opened, so a later selection cannot
+/// accidentally send a variation or a style to different work.
+#[derive(Debug, Clone)]
+pub struct SoundDesignDialog {
+    purpose: String,
+    vibe: String,
+    duration: f64,
+    intensity: f64,
+    brief: String,
+    copy_source: bool,
+    source: Option<ClipId>,
+    target: Option<TrackId>,
+    apply: bool,
+    error: String,
+}
+
+impl SoundDesignDialog {
+    fn new(e: &Engine, apply: bool) -> Self {
+        let selected = &e.session().edit;
+        let source = selected.selected_clips.first().copied().filter(|id| e.session().find_clip(*id).is_some_and(|(_, c)| c.source().is_some()));
+        let target = match selected.selected_tracks.as_slice() {
+            [id] if e.session().track(*id).is_some_and(|t| t.kind == soundcraft_model::TrackKind::Audio) => Some(*id),
+            _ => None,
+        };
+        Self {
+            purpose: "transition".into(),
+            vibe: "clean".into(),
+            duration: 0.8,
+            intensity: 0.5,
+            brief: String::new(),
+            copy_source: false,
+            source,
+            target,
+            apply,
+            error: String::new(),
+        }
+    }
+}
+
+fn sound_design_action(e: &mut Engine, state: &SoundDesignDialog) -> Result<(String, Value), String> {
+    let mut params = json!({"purpose": state.purpose, "vibe": state.vibe, "duration": state.duration,
+        "intensity": state.intensity, "brief": state.brief});
+    if !state.apply {
+        if state.copy_source {
+            params["source_clip"] = json!(state.source.ok_or("Select an audio clip before opening Sound Design.")?.0);
+        }
+        return Ok(("sound.design".into(), params));
+    }
+    let target = state.target.ok_or("Select exactly one audio track before applying a style.")?;
+    let plan = e.execute("sound.design_plan", &params).map_err(|error| error.to_string())?;
+    let effects: Vec<Value> = plan
+        .get("inserts")
+        .and_then(Value::as_array)
+        .ok_or("Sound plan returned no effect chain.")?
+        .iter()
+        .map(|insert| json!({"plugin": insert.get("plugin"), "params": insert.get("params")}))
+        .collect();
+    if effects.is_empty() {
+        return Err("Clean adds no effects. Choose another vibe to append a style.".into());
+    }
+    Ok(("sound.effect_chain".into(), json!({"track": target.0, "mode": "append", "effects": effects})))
 }
 
 #[derive(Default)]
@@ -59,6 +123,7 @@ impl Dialogs {
             Dialog::Group { id: Some(_), .. } => "modify_group",
             Dialog::Session { .. } => "session",
             Dialog::ScoreSetup { .. } => "score_setup",
+            Dialog::SoundDesign(_) => "sound_design",
             Dialog::SaveChanges { .. } => "save_changes",
         })
     }
@@ -106,6 +171,7 @@ impl Dialogs {
                 Dialog::NewTracks { count: 1, format: "Mono".into(), kind: "audio".into(), timebase: "samples".into(), name: "Audio".into() }
             }
             "session.new" => Dialog::NewSession { name: "Untitled".into(), sample_rate: 48_000, demo: false },
+            "sound.design" | "sound.effect_chain" => Dialog::SoundDesign(SoundDesignDialog::new(e, id == "sound.effect_chain")),
             "file.bounce_mix" => {
                 let dir = e
                     .path
@@ -336,6 +402,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Group { id: Some(_), .. } => "Modify Group",
         Dialog::Session { .. } => "Session Setup",
         Dialog::ScoreSetup { .. } => "Score Setup",
+        Dialog::SoundDesign(state) => {
+            if state.apply {
+                "Apply Sound Style"
+            } else {
+                "Sound Design"
+            }
+        }
         Dialog::SaveChanges { then } if then.0 == "session.revert" => "Revert to Saved",
         Dialog::SaveChanges { .. } => "Unsaved Changes",
     }
@@ -349,6 +422,49 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             match &mut d {
+                Dialog::SoundDesign(state) => {
+                    ui.set_min_width(360.0);
+                    if state.apply {
+                        let track = state.target.and_then(|id| app.engine.session().track(id));
+                        ui.label(track.map_or_else(|| "Select one audio track, then reopen this dialog.".to_string(), |t| format!("Append a style to {}", t.name)));
+                    } else {
+                        ui.label("Create a new sound variation. Your original stays in place.");
+                        ui.add(egui::TextEdit::singleline(&mut state.brief).hint_text("Brief or notes (optional)").char_limit(4096).desired_width(360.0));
+                        egui::ComboBox::from_label("Purpose").selected_text(&state.purpose).show_ui(ui, |ui| {
+                            for purpose in ["transition", "reveal", "disappear", "typography", "impact", "notification", "ambience"] {
+                                ui.selectable_value(&mut state.purpose, purpose.to_string(), purpose);
+                            }
+                        });
+                    }
+                    egui::ComboBox::from_label("Vibe").selected_text(&state.vibe).show_ui(ui, |ui| {
+                        for vibe in ["clean", "warm", "dark", "cinematic", "retro", "futuristic", "playful", "organic"] {
+                            ui.selectable_value(&mut state.vibe, vibe.to_string(), vibe);
+                        }
+                    });
+                    ui.add(egui::Slider::new(&mut state.intensity, 0.0..=1.0).text("Intensity"));
+                    if !state.apply {
+                        ui.horizontal(|ui| {
+                            ui.label("Duration");
+                            ui.add(egui::DragValue::new(&mut state.duration).range(0.03..=30.0).speed(0.05).suffix(" s"));
+                        });
+                        ui.add_enabled_ui(state.source.is_some(), |ui| {
+                            crate::widgets::checkbox(ui, &mut state.copy_source, "Use selected audio clip as the source");
+                        });
+                        ui.label(egui::RichText::new("Purpose and vibe choose the starting recipe. Effects stay editable.").small());
+                    } else {
+                        ui.label(egui::RichText::new("Existing clips and effects stay in place. Clean adds no effects.").small());
+                    }
+                    if !state.error.is_empty() {
+                        ui.label(egui::RichText::new(&state.error).color(Tokens::current().text_dim));
+                    }
+                    let ready = !state.apply || (state.target.is_some() && state.vibe != "clean");
+                    if buttons_enabled(ui, if state.apply { "Apply style" } else { "Create variation" }, enter, ready) {
+                        match sound_design_action(&mut app.engine, state) {
+                            Ok(command) => action = Some(command),
+                            Err(error) => state.error = error,
+                        }
+                    }
+                }
                 Dialog::NewTracks { count, format, kind, timebase, name } => {
                     ui.horizontal(|ui| {
                         ui.label("Create");
@@ -806,6 +922,28 @@ fn audiosuite_window(app: &mut SoundApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_dialog_actions_keep_explicit_source_and_style_targets() {
+        let mut e = Engine::default();
+        let created = e.execute("sound.design", &json!({"duration": 0.03})).unwrap();
+        let mut design = SoundDesignDialog::new(&e, false);
+        design.copy_source = true;
+        let mut style = SoundDesignDialog::new(&e, true);
+        style.vibe = "warm".into();
+        e.execute("edit.select_none", &json!({})).unwrap();
+        let (id, params) = sound_design_action(&mut e, &design).unwrap();
+        assert_eq!(id, "sound.design");
+        assert_eq!(params["source_clip"], created["clip"]);
+        let (id, params) = sound_design_action(&mut e, &style).unwrap();
+        assert_eq!(id, "sound.effect_chain");
+        assert_eq!(params["track"], created["track"]);
+        assert_eq!(params["mode"], "append");
+        assert_eq!(params["effects"][0]["plugin"], "saturator");
+        assert!(!e.can_undo() || e.undo_label() == Some("Design Sound"), "planning must not create an edit");
+        e.execute(&id, &params).unwrap();
+        assert_eq!(e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().plugin, "saturator");
+    }
 
     #[test]
     fn file_commands_get_path_prompts_with_sensible_names() {

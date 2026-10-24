@@ -141,11 +141,16 @@ fn mcp_automation_roots_take_several_folders() {
     let args = ["--automation-read-root", &p("in"), &read2, "--automation-write-root", &p("out"), "--automation-write-root", &p("out2")];
     let (success, stderr, replies) = mcp_session(&args, &calls);
     assert!(success, "{stderr}");
-    assert!(stderr.contains(&format!("read {}, {}", p("in"), p("in2"))), "{stderr}");
+    // Windows canonicalization adds a verbatim prefix; the server prints ordinary paths.
+    let normalize = |value: &str| value.replace(r"\\?\", "").replace('\\', "/");
+    assert!(normalize(&stderr).contains(&normalize(&format!("read {}, {}", p("in"), p("in2")))), "{stderr}");
     let errors: Vec<bool> = replies.iter().map(|r| r["result"]["isError"] == true).collect();
     assert_eq!(errors, [false, false, true, true, false, false, true, true, true], "{replies:?}");
     for (i, kind) in [(2, "read"), (3, "read"), (6, "write"), (7, "write"), (8, "read")] {
-        assert!(text(&replies[i]).contains(&format!("outside the {kind} roots ")), "{}", text(&replies[i]));
+        // Windows can reject `..` inside a canonical verbatim path before root comparison.
+        // Both outcomes must still be an automation-path refusal, with no read/write performed.
+        let expected = if cfg!(windows) && i == 3 { "automation path rejected:".to_string() } else { format!("outside the {kind} roots ") };
+        assert!(text(&replies[i]).contains(&expected), "{}", text(&replies[i]));
     }
     assert!(base.join("out/a.wav").is_file() && base.join("out2/b.wav").is_file());
     assert!(!base.join("x.wav").exists() && !base.join("in2/c.wav").exists());

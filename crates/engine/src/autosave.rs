@@ -186,9 +186,13 @@ impl Autosave {
         let mut n = 1;
         loop {
             // Not recursive, so a folder that already exists is reported and the next name tried.
-            let mut builder = std::fs::DirBuilder::new();
+            let builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            let builder = {
+                let mut builder = builder;
+                std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+                builder
+            };
             match builder.create(&dir) {
                 Ok(()) => break,
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {

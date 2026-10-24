@@ -8,7 +8,9 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BATCH_CALLS: usize = 1000;
 
-const INSTRUCTIONS: &str = "SoundCraft is a digital audio workstation (Pro Tools-class). Everything a user can do is a \
+const INSTRUCTIONS: &str = "SoundCraft designs and edits audio from a purpose and vibe. Use plan_sound → design_sound → list_plugins / apply_effect_chain \
+→ preview_audio / analyze_audio → bounce_mix + save_session. Refine with parameters, automation, offline edits and undo. \
+The client model interprets language; the server supplies deterministic recipes and actual DSP/audio. Everything a user can do is a \
 command: call `list_commands` to discover ids and their params, then `execute` (or `batch`). Positions are samples \
 (integers), `{\"seconds\": x}`, or time strings like \"bars_beats:5|1|000\" / \"0:12.500\". Tracks are referenced by id \
 or name. Verify your work with `inspect_session` (tracks, clips, mixer, automation, markers, selection). Programmatic \
@@ -23,7 +25,7 @@ fn tool(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
 }
 
 pub fn tool_definitions() -> Vec<Value> {
-    vec![
+    let mut definitions = vec![
         tool(
             "list_commands",
             "List SoundCraft commands (id, label, menu path, shortcut, params doc, enabled).",
@@ -101,12 +103,18 @@ pub fn tool_definitions() -> Vec<Value> {
             json!({"key": {"type": "string"}, "cmd": {"type": "boolean"}, "shift": {"type": "boolean"}, "alt": {"type": "boolean"}, "ctrl": {"type": "boolean"}}),
             &["key"],
         ),
-    ]
+    ];
+    definitions.extend(crate::sound::tools());
+    definitions
 }
 
 fn text_result(v: &Value) -> Value {
     let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
-    json!({"content": [{"type": "text", "text": text}], "isError": false})
+    let mut result = json!({"content": [{"type": "text", "text": text}], "isError": false});
+    if v.is_object() {
+        result["structuredContent"] = v.clone();
+    }
+    result
 }
 
 fn error_result(e: &str) -> Value {
@@ -124,6 +132,29 @@ impl<B: Backend> Server<B> {
 
     /// Dispatch a tool call.
     pub fn call_tool(&mut self, name: &str, args: &Value) -> Value {
+        if !args.is_object() {
+            return error_result("tool arguments must be an object");
+        }
+        if let Some(command) = crate::sound::command(name) {
+            if let Err(error) = crate::sound::validate_arguments(name, args) {
+                return error_result(&error);
+            }
+            return match self.exec(command, args.clone()) {
+                Ok(mut value) if name == "preview_audio" => {
+                    let audio = value.as_object_mut().and_then(|v| v.remove("audio_base64"));
+                    let Some(audio) = audio.and_then(|v| v.as_str().map(str::to_owned)) else {
+                        return error_result("preview backend returned no WAV audio");
+                    };
+                    let mut result = text_result(&value);
+                    if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+                        content.push(json!({"type": "audio", "data": audio, "mimeType": "audio/wav"}));
+                    }
+                    result
+                }
+                Ok(value) => text_result(&value),
+                Err(error) => error_result(&error),
+            };
+        }
         let a = |k: &str| args.get(k).cloned();
         let r: Result<Value, String> = match name {
             "list_commands" => self.backend.call("engine.commands", json!({"filter": a("filter")})),
@@ -208,13 +239,15 @@ impl<B: Backend> Server<B> {
                 let ver = if SUPPORTED.contains(&want) { want } else { PROTOCOL_VERSION };
                 Ok(json!({
                     "protocolVersion": ver,
-                    "capabilities": {"tools": {}, "resources": {}},
+                    "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                     "serverInfo": {"name": "soundcraft", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": format!("{INSTRUCTIONS}\nBackend: {}.", self.backend.describe()),
+                    "instructions": format!("{INSTRUCTIONS}\n{}\nBackend: {}.", crate::sound::WORKFLOW, self.backend.describe()),
                 }))
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_definitions()})),
+            "prompts/list" => Ok(crate::sound::prompts()),
+            "prompts/get" => crate::sound::prompt(&params).map_err(|e| (-32602, e)),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -223,6 +256,8 @@ impl<B: Backend> Server<B> {
             "resources/list" => Ok(json!({"resources": [
                 {"uri": "soundcraft://session", "name": "Session", "mimeType": "application/json", "description": "The open session as JSON"},
                 {"uri": "soundcraft://commands", "name": "Commands", "mimeType": "application/json", "description": "All commands"},
+                {"uri": "soundcraft://plugins", "name": "Built-in plugins", "mimeType": "application/json", "description": "Plugin ids, parameters and ranges (list_plugins can also discover external plugins)"},
+                {"uri": "soundcraft://sound-design", "name": "Sound design workflow", "mimeType": "application/json", "description": "Purpose/vibe recipes, examples and full editing workflow"},
             ]})),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
             "resources/read" => {
@@ -230,6 +265,8 @@ impl<B: Backend> Server<B> {
                 let r = match uri {
                     "soundcraft://session" => self.backend.call("session.inspect", json!({"detail": "full"})),
                     "soundcraft://commands" => self.backend.call("engine.commands", json!({})),
+                    "soundcraft://plugins" => self.exec("sound.catalog", json!({})),
+                    "soundcraft://sound-design" => Ok(crate::sound::guide()),
                     _ => Err(format!("unknown resource {uri}")),
                 };
                 match r {

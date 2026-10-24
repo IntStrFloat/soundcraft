@@ -107,6 +107,30 @@ files it was given rather than guarding against other software on the computer.
 
 Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 
+## Sound design from a brief
+
+This fork extends the same server with purpose/vibe recipes, original synthesis, source-clip
+variations, editable effect chains, measured audio previews and a complete creative workflow.
+See [Sound design MCP](sound-design-mcp.md) for setup, examples in Russian/English and limits.
+
+| Tool | Purpose |
+|---|---|
+| `list_plugins` | Built-in and optionally installed CLAP/VST3/AU effects/instruments, with parameter ids, ranges, defaults, units and choices. |
+| `plan_sound` | Read-only starting recipe, interpretation and assumptions. |
+| `design_sound` | New synthetic sound or a new variation of an existing clip; one undo step. |
+| `apply_effect_chain` | Validate the complete ordered chain before applying it; append/replace, one undo. |
+| `set_plugin_params`, `bypass_plugin`, `remove_plugin` | Parameter refinement and A/B comparison. |
+| `set_automation_point` | Animate volume, pan, sends or plugin parameters. |
+| `process_audio` | Offline AudioSuite processing of explicit clip ids. |
+| `analyze_audio` | Peak, true peak, RMS, integrated LUFS, clipping and media/silence warnings. |
+| `preview_audio` | Real PCM16 WAV returned as MCP audio plus structured measurements; no temporary file or audio device. |
+| `undo`, `redo` | Revert or restore an edit. |
+
+The `sound_design` MCP prompt guides the client's language model through creation, refinement,
+audition and delivery. Additional resources: `soundcraft://plugins`, `soundcraft://sound-design`.
+Tools returning objects also return `structuredContent`; text content remains available.
+All new tools work both headlessly and with `--connect`, through registered engine commands.
+
 ## Conventions
 
 - Programmatic calls never open dialogs; empty params act on the current selection.

@@ -167,6 +167,8 @@ const DIALOG_COMMANDS: &[&str] = &[
     "event.transpose",
     "edit.strip_silence",
     "clip.rename",
+    "sound.design",
+    "sound.effect_chain",
 ];
 
 /// Shared menu hierarchy for egui and native desktop hosts.
@@ -739,6 +741,20 @@ mod tests {
         app.dialogs.open = None;
         invoke_menu(&mut app, "ui.bounce_dialog", "File > Bounce Mix...");
         assert_eq!(app.dialogs.open_name(), Some("bounce"));
+    }
+
+    #[test]
+    fn sound_commands_open_native_dialogs_only_for_menu_style_invocation() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.run("sound.design", json!({"duration": 0.03})).unwrap();
+        assert!(app.dialogs.open.is_none());
+        assert_eq!(app.engine.session().tracks.len(), 1);
+        invoke_menu(&mut app, "sound.design", "");
+        assert_eq!(app.dialogs.open_name(), Some("sound_design"));
+        app.dialogs.open = None;
+        invoke_menu(&mut app, "sound.effect_chain", "");
+        assert_eq!(app.dialogs.open_name(), Some("sound_design"));
+        assert_eq!(app.engine.session().tracks.len(), 1, "opening the dialog must not edit the session");
     }
 
     #[test]
